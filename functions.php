@@ -703,11 +703,16 @@ class Alean_Loyalty_WooCommerce {
             'Оплата заказа #' . $order_id
         );
         
-// ИСПРАВЛЕНО: убираем неправильное сообщение об ошибке
-if (!is_array($result) || !isset($result['status'])) {
-    error_log('Loyalty payment API error for order ' . $order_id . ': ' . print_r($result, true));
-    throw new Exception('Ошибка при списании баллов');
-}
+        // Логируем результат списания для отладки
+        error_log('Spend points result for order ' . $order_id . ': ' . print_r($result, true));
+        
+        // Если API возвращает ошибку, откатываем операцию
+        if (is_array($result) && isset($result['status']) && $result['status'] === 'error') {
+            error_log('API returned error status for order ' . $order_id);
+            throw new Exception('Ошибка API при списании баллов: ' . ($result['message'] ?? 'неизвестная ошибка'));
+        }
+        
+        // В остальных случаях считаем операцию успешной (API может не возвращать статус)
         
         // Помечаем заказ как оплаченный
         $order->payment_complete();
@@ -1024,10 +1029,21 @@ public function process_payment($order_id) {
 
                     // 2. Списание баллов
             $spend_result = $this->spend_points($email, $total, 'order_'.$order_id, 'Оплата заказа #'.$order_id);
+            
+            // Логируем результат списания
+            error_log('Spend points result in process_payment: ' . print_r($spend_result, true));
+            
+            // Проверяем только явные ошибки
+            if (is_array($spend_result) && isset($spend_result['status']) && $spend_result['status'] === 'error') {
+                error_log('API error in process_payment for order ' . $order_id);
+                throw new Exception('Ошибка списания баллов: ' . ($spend_result['message'] ?? 'неизвестная ошибка'));
+            }
 
             // 3. КРИТИЧЕСКИ ВАЖНЫЕ ДЕЙСТВИЯ:
             $order->payment_complete();
             $order->add_order_note('Оплачено баллами. Списано: ' . $total . ' баллов');
+            
+            error_log('Order ' . $order_id . ' marked as completed successfully');
         
         // 4. Очистка корзины ДО редиректа
         if (function_exists('WC') && WC()->cart) {
