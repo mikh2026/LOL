@@ -1953,6 +1953,59 @@ add_filter('woocommerce_product_add_to_cart_text', function($text, $product) {
 add_filter('wc_add_to_cart_message_html', '__return_false');
 add_filter('woocommerce_cart_redirect_after_error', '__return_false');
 
+// Убираем системные уведомления об ошибках (включая "выбрать опции товара")
+add_filter('woocommerce_add_error', '__return_false');
+add_filter('woocommerce_add_notice', 'filter_woocommerce_notices', 10, 2);
+
+function filter_woocommerce_notices($message, $notice_type) {
+    // Убираем уведомления об ошибках, связанных с выбором опций
+    if ($notice_type === 'error') {
+        // Проверяем, содержит ли сообщение текст о выборе опций
+        if (strpos($message, 'Перейдите в') !== false && strpos($message, 'чтобы выбрать опции товара') !== false) {
+            return false; // Не показываем это уведомление
+        }
+        // Также убираем другие системные ошибки
+        if (strpos($message, 'чтобы выбрать опции') !== false) {
+            return false;
+        }
+    }
+    return $message;
+}
+
+// Дополнительная защита - перехватываем все уведомления WooCommerce
+add_action('woocommerce_before_single_product_summary', 'clear_woocommerce_notices', 5);
+add_action('woocommerce_before_shop_loop', 'clear_woocommerce_notices', 5);
+add_action('wp_loaded', 'clear_woocommerce_notices');
+
+function clear_woocommerce_notices() {
+    if (function_exists('wc_clear_notices')) {
+        // Получаем все уведомления
+        $notices = wc_get_notices();
+        
+        // Фильтруем и удаляем нежелательные
+        foreach ($notices as $type => $messages) {
+            if ($type === 'error') {
+                foreach ($messages as $key => $message) {
+                    $message_text = is_array($message) ? $message['notice'] : $message;
+                    if (strpos($message_text, 'Перейдите в') !== false || 
+                        strpos($message_text, 'чтобы выбрать опции') !== false) {
+                        unset($notices[$type][$key]);
+                    }
+                }
+            }
+        }
+        
+        // Очищаем все уведомления и устанавливаем отфильтрованные
+        wc_clear_notices();
+        foreach ($notices as $type => $messages) {
+            foreach ($messages as $message) {
+                $message_text = is_array($message) ? $message['notice'] : $message;
+                wc_add_notice($message_text, $type);
+            }
+        }
+    }
+}
+
 // Включаем AJAX для добавления в корзину на всех страницах
 add_filter('woocommerce_loop_add_to_cart_link', 'add_ajax_to_cart_class', 10, 2);
 function add_ajax_to_cart_class($link, $product) {
@@ -1991,6 +2044,26 @@ function woocommerce_ajax_add_to_cart() {
 }
 
 // Добавляем JavaScript для AJAX уведомлений
+// Добавляем CSS для скрытия системных уведомлений
+add_action('wp_head', 'hide_woocommerce_notices_css');
+function hide_woocommerce_notices_css() {
+    ?>
+    <style>
+    /* Скрываем системные уведомления WooCommerce */
+    .woocommerce-notices-wrapper .woocommerce-error,
+    .woocommerce-notices-wrapper .woocommerce-message,
+    .woocommerce-notices-wrapper .woocommerce-info {
+        display: none !important;
+    }
+    
+    /* Скрываем весь контейнер уведомлений, если он пустой */
+    .woocommerce-notices-wrapper:empty {
+        display: none !important;
+    }
+    </style>
+    <?php
+}
+
 add_action('wp_footer', 'ajax_cart_notifications_script');
 function ajax_cart_notifications_script() {
     if (is_admin()) return;
@@ -2019,6 +2092,37 @@ function ajax_cart_notifications_script() {
         // Добавляем CSS анимацию
         if ($('#cart-notification-styles').length === 0) {
             $('head').append('<style id="cart-notification-styles">@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}</style>');
+        }
+
+        // Функция для удаления системных уведомлений WooCommerce
+        function removeWooCommerceNotices() {
+            $('.woocommerce-notices-wrapper .woocommerce-error, .woocommerce-notices-wrapper .woocommerce-message, .woocommerce-notices-wrapper .woocommerce-info').remove();
+            
+            // Скрываем пустой контейнер
+            $('.woocommerce-notices-wrapper:empty').hide();
+        }
+
+        // Удаляем уведомления при загрузке страницы
+        removeWooCommerceNotices();
+        
+        // Наблюдаем за изменениями в DOM и удаляем новые уведомления
+        if (typeof MutationObserver !== 'undefined') {
+            var observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(mutation) {
+                    if (mutation.type === 'childList') {
+                        removeWooCommerceNotices();
+                    }
+                });
+            });
+            
+            // Наблюдаем за контейнером уведомлений
+            var noticesContainer = document.querySelector('.woocommerce-notices-wrapper');
+            if (noticesContainer) {
+                observer.observe(noticesContainer, {
+                    childList: true,
+                    subtree: true
+                });
+            }
         }
 
         // Обработчик для кнопок добавления в корзину в каталоге
