@@ -215,12 +215,12 @@ add_filter('woocommerce_get_price_html', 'replace_money_with_points', 10, 2);
 function replace_money_with_points($price, $product) {
     return wc_get_price_to_display($product) . ' <img src="https://test-merch.alean.ru/wp-content/uploads/2025/05/android-icon-192x192-1.png" width="17" alt="Логотип" class="logo">';
 }
-// Добавляем виртуальный метод оплаты баллами
-add_filter('woocommerce_payment_gateways', 'add_points_payment_gateway');
-function add_points_payment_gateway($gateways) {
-    $gateways[] = 'WC_Points_Payment_Gateway';
-    return $gateways;
-}
+// ОТКЛЮЧЕН: Добавляем виртуальный метод оплаты баллами (заменен на Alean_Loyalty_Payment_Gateway)
+// add_filter('woocommerce_payment_gateways', 'add_points_payment_gateway');
+// function add_points_payment_gateway($gateways) {
+//     $gateways[] = 'WC_Points_Payment_Gateway';
+//     return $gateways;
+// }
 
 // Создаем класс платежного шлюза
 add_action('plugins_loaded', 'init_points_payment_gateway');
@@ -585,12 +585,12 @@ function init_alean_loyalty_gateway() {
         }
     }
     
-    // Регистрация шлюза
-    function add_alean_loyalty_gateway($methods) {
-        $methods[] = 'WC_Gateway_Alean_Loyalty';
-        return $methods;
-    }
-    add_filter('woocommerce_payment_gateways', 'add_alean_loyalty_gateway');
+    // ОТКЛЮЧЕН: Регистрация шлюза (заменен на Alean_Loyalty_Payment_Gateway)
+    // function add_alean_loyalty_gateway($methods) {
+    //     $methods[] = 'WC_Gateway_Alean_Loyalty';
+    //     return $methods;
+    // }
+    // add_filter('woocommerce_payment_gateways', 'add_alean_loyalty_gateway');
 }
 
 /**
@@ -794,6 +794,13 @@ private function get_lp_data($email) {
     }
 }
 
+// Регистрация основного платежного шлюза
+add_filter('woocommerce_payment_gateways', 'register_alean_loyalty_payment_gateway');
+function register_alean_loyalty_payment_gateway($methods) {
+    $methods[] = 'Alean_Loyalty_Payment_Gateway';
+    return $methods;
+}
+
 // Инициализация интеграции
 new Alean_Loyalty_WooCommerce();
 
@@ -860,45 +867,66 @@ class Alean_Loyalty_Payment_Gateway extends WC_Payment_Gateway {
     /**
      * Поля для ввода на странице оплаты
      */
-    public function payment_fields() {
-    $user = wp_get_current_user();
-    if (!$user->ID) {
-        echo '<p>Для оплаты баллами необходимо авторизоваться</p>';
-        return;
-    }
-    error_log('Current user email: ' . $user->user_email);
+        public function payment_fields() {
+        $user = wp_get_current_user();
+        if (!$user->ID) {
+            echo '<p>Для оплаты баллами необходимо авторизоваться</p>';
+            return;
+        }
         
+        error_log('=== PAYMENT FIELDS DEBUG ===');
+        error_log('Current user email: ' . $user->user_email);
+            
         $response = wp_remote_post(
             'https://n8n.alean.ru/webhook/get-lp-email',
             [
                 'headers' => ['Content-Type' => 'application/json'],
-                'body' => json_encode(['email' => $user->user_email])
+                'body' => json_encode(['email' => $user->user_email]),
+                'timeout' => 15
             ]
         );
         
         if (is_wp_error($response)) {
+            error_log('Payment fields API error: ' . $response->get_error_message());
             echo '<p>Ошибка получения данных бонусной программы</p>';
             return;
         }
         
-        $data = json_decode(wp_remote_retrieve_body($response), true);
+        $body = wp_remote_retrieve_body($response);
+        error_log('Payment fields API response: ' . $body);
+        $data = json_decode($body, true);
         
-        if (empty($data['lp-status']) || (isset($data['lp-status']) && strtolower($data['lp-status']) !== 'true')) {
-            echo '<p>Вы не участвуете в бонусной программе</p>';
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log('Payment fields JSON error: ' . json_last_error_msg());
+            echo '<p>Ошибка обработки данных</p>';
             return;
         }
         
-        $balance = $data['total_points'];
+        // Более гибкая проверка статуса
+        $lp_status = isset($data['lp-status']) ? strtoupper(trim($data['lp-status'])) : '';
+        $balance = isset($data['total_points']) ? floatval($data['total_points']) : 0;
+        
+        error_log('Payment fields - LP Status: ' . $lp_status);
+        error_log('Payment fields - Balance: ' . $balance);
+        
+        if ($lp_status !== 'TRUE') {
+            echo '<p>Вы не участвуете в бонусной программе или данные недоступны</p>';
+            echo '<p><small>Статус: ' . htmlspecialchars($lp_status) . '</small></p>';
+            return;
+        }
+        
         $order_total = WC()->cart->total;
         
         echo '<div class="loyalty-payment-fields">';
-        echo '<p>Ваш баланс: <strong>' . $balance . ' баллов</strong></p>';
-        echo '<p>Сумма заказа: <strong>' . wc_price($order_total) . '</strong></p>';
+        echo '<p>Ваш баланс: <strong>' . number_format($balance, 0, ',', ' ') . ' баллов</strong></p>';
+        echo '<p>Сумма заказа: <strong>' . number_format($order_total, 0, ',', ' ') . ' баллов</strong></p>';
         
         if ($balance >= $order_total) {
-            echo '<p>Вы можете оплатить весь заказ бонусными баллами</p>';
+            echo '<p style="color: green;">✓ Вы можете оплатить весь заказ бонусными баллами</p>';
         } else {
-            echo '<p class="error">Недостаточно баллов для оплаты заказа</p>';
+            $needed = $order_total - $balance;
+            echo '<p style="color: red;">✗ Недостаточно баллов для оплаты заказа</p>';
+            echo '<p><small>Не хватает: ' . number_format($needed, 0, ',', ' ') . ' баллов</small></p>';
         }
         
         echo '</div>';
@@ -912,26 +940,55 @@ class Alean_Loyalty_Payment_Gateway extends WC_Payment_Gateway {
         $email = $user->user_email;
         $order_total = WC()->cart->total;
         
+        error_log('=== LOYALTY VALIDATION DEBUG ===');
+        error_log('User email: ' . $email);
+        error_log('Order total: ' . $order_total);
+        
         $response = wp_remote_post(
             'https://n8n.alean.ru/webhook/get-lp-email',
             [
                 'headers' => ['Content-Type' => 'application/json'],
-                'body' => json_encode(['email' => $email])
+                'body' => json_encode(['email' => $email]),
+                'timeout' => 15
             ]
         );
         
         if (is_wp_error($response)) {
+            error_log('API Error: ' . $response->get_error_message());
             wc_add_notice('Ошибка проверки бонусных баллов', 'error');
             return false;
         }
         
-        $data = json_decode(wp_remote_retrieve_body($response), true);
+        $body = wp_remote_retrieve_body($response);
+        error_log('API Response: ' . $body);
+        $data = json_decode($body, true);
         
-        if ($data['lp-status'] !== 'TRUE' || $data['total_points'] < $order_total) {
-            wc_add_notice('Недостаточно бонусных баллов для оплаты заказа', 'error');
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log('JSON decode error: ' . json_last_error_msg());
+            wc_add_notice('Ошибка обработки данных бонусной программы', 'error');
             return false;
         }
         
+        error_log('LP Status: ' . ($data['lp-status'] ?? 'NOT SET'));
+        error_log('Total points: ' . ($data['total_points'] ?? 'NOT SET'));
+        
+        // Проверяем статус более гибко
+        $lp_status = isset($data['lp-status']) ? strtoupper(trim($data['lp-status'])) : '';
+        $total_points = isset($data['total_points']) ? floatval($data['total_points']) : 0;
+        
+        if ($lp_status !== 'TRUE') {
+            error_log('LP Status check failed. Status: ' . $lp_status);
+            wc_add_notice('Вы не участвуете в бонусной программе', 'error');
+            return false;
+        }
+        
+        if ($total_points < $order_total) {
+            error_log('Insufficient points. Available: ' . $total_points . ', Required: ' . $order_total);
+            wc_add_notice('Недостаточно бонусных баллов. Доступно: ' . $total_points . ', требуется: ' . $order_total, 'error');
+            return false;
+        }
+        
+        error_log('Validation passed successfully');
         return true;
     }
     
@@ -943,16 +1000,27 @@ public function process_payment($order_id) {
     $email = $order->get_billing_email();
     $total = $order->get_total();
 
-    try {
-        // 1. Проверяем баланс
-        $balance_data = $this->get_lp_data($email);
-        if (!isset($balance_data['lp-status']) || $balance_data['lp-status'] !== 'TRUE') {
-            throw new Exception('Бонусная программа недоступна');
-        }
+            try {
+            error_log('=== PAYMENT PROCESSING DEBUG ===');
+            error_log('Processing payment for order: ' . $order_id);
+            error_log('Email: ' . $email . ', Total: ' . $total);
+            
+            // 1. Проверяем баланс
+            $balance_data = $this->get_lp_data($email);
+            
+            $lp_status = isset($balance_data['lp-status']) ? strtoupper(trim($balance_data['lp-status'])) : '';
+            $available_points = isset($balance_data['total_points']) ? floatval($balance_data['total_points']) : 0;
+            
+            error_log('Process payment - LP Status: ' . $lp_status);
+            error_log('Process payment - Available points: ' . $available_points);
+            
+            if ($lp_status !== 'TRUE') {
+                throw new Exception('Бонусная программа недоступна. Статус: ' . $lp_status);
+            }
 
-        if ($balance_data['total_points'] < $total) {
-            throw new Exception('Недостаточно баллов. Доступно: ' . $balance_data['total_points']);
-        }
+            if ($available_points < $total) {
+                throw new Exception('Недостаточно баллов. Доступно: ' . $available_points . ', требуется: ' . $total);
+            }
 
                     // 2. Списание баллов
             $spend_result = $this->spend_points($email, $total, 'order_'.$order_id, 'Оплата заказа #'.$order_id);
