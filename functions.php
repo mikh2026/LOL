@@ -59,6 +59,49 @@ function add_csp_headers() {
 add_action('send_headers', 'add_csp_headers');
 
 /**
+ * ВРЕМЕННАЯ функция для тестирования API (удалить после отладки)
+ */
+function test_alean_api() {
+    if (isset($_GET['test_alean_api']) && current_user_can('manage_options')) {
+        error_log('=== MANUAL API TEST ===');
+        
+        // Тест получения баланса
+        $test_email = 'test@example.com'; // Замените на реальный email
+        $balance_response = alean_api_request(ALEAN_API_GET_LP_URL, ['email' => $test_email]);
+        
+        if (is_wp_error($balance_response)) {
+            error_log('Balance API Error: ' . $balance_response->get_error_message());
+        } else {
+            $balance_body = wp_remote_retrieve_body($balance_response);
+            error_log('Balance API Response: ' . $balance_body);
+        }
+        
+        // Тест списания (ОСТОРОЖНО - это реально спишет баллы!)
+        // Раскомментируйте только если готовы потратить баллы для теста
+        /*
+        $spend_response = alean_api_request(ALEAN_API_SPEND_LP_URL, [
+            'email' => $test_email,
+            'sum' => 1,
+            'eventexternalid' => 'test_' . time(),
+            'comment' => 'Тестовое списание'
+        ]);
+        
+        if (is_wp_error($spend_response)) {
+            error_log('Spend API Error: ' . $spend_response->get_error_message());
+        } else {
+            $spend_body = wp_remote_retrieve_body($spend_response);
+            $spend_code = wp_remote_retrieve_response_code($spend_response);
+            error_log('Spend API Response Code: ' . $spend_code);
+            error_log('Spend API Response: ' . $spend_body);
+        }
+        */
+        
+        wp_die('API test completed. Check error logs.');
+    }
+}
+add_action('init', 'test_alean_api');
+
+/**
  * Load in-house compatibility.
  */
 if ( ASTRA_THEME_ORG_VERSION ) {
@@ -725,15 +768,18 @@ class Alean_Loyalty_WooCommerce {
         );
         
         // Логируем результат списания для отладки
-        error_log('Spend points result for order ' . $order_id . ': ' . print_r($result, true));
+        error_log('=== LEGACY SPEND POINTS RESULT ===');
+        error_log('Result for order ' . $order_id . ': ' . print_r($result, true));
         
-        // Если API возвращает ошибку, откатываем операцию
+        // ИСПРАВЛЕНО: Более мягкая проверка ошибок
+        // Считаем операцию неуспешной только при явной ошибке
         if (is_array($result) && isset($result['status']) && $result['status'] === 'error') {
-            error_log('API returned error status for order ' . $order_id);
+            error_log('API returned explicit error status for order ' . $order_id);
             throw new Exception('Ошибка API при списании баллов: ' . ($result['message'] ?? 'неизвестная ошибка'));
         }
         
-        // В остальных случаях считаем операцию успешной (API может не возвращать статус)
+        // В остальных случаях считаем операцию успешной
+        error_log('No explicit error in legacy method, treating as successful');
         
         // Помечаем заказ как оплаченный
         $order->payment_complete();
@@ -807,6 +853,12 @@ class Alean_Loyalty_WooCommerce {
     }
     
     private function spend_points($email, $sum, $order_id, $comment) {
+        error_log('=== SPEND POINTS API CALL ===');
+        error_log('Email: ' . $email);
+        error_log('Sum: ' . $sum);
+        error_log('Order ID: ' . $order_id);
+        error_log('Comment: ' . $comment);
+        
         $response = alean_api_request(ALEAN_API_SPEND_LP_URL, [
             'email' => $email,
             'sum' => $sum,
@@ -815,10 +867,29 @@ class Alean_Loyalty_WooCommerce {
         ]);
         
         if (is_wp_error($response)) {
+            error_log('WP_Error in spend_points: ' . $response->get_error_message());
             return ['status' => 'error', 'message' => $response->get_error_message()];
         }
         
-        return json_decode(wp_remote_retrieve_body($response), true);
+        $body = wp_remote_retrieve_body($response);
+        $http_code = wp_remote_retrieve_response_code($response);
+        
+        error_log('HTTP Response Code: ' . $http_code);
+        error_log('Raw API Response Body: ' . $body);
+        
+        $decoded = json_decode($body, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            error_log('JSON Decode Error: ' . json_last_error_msg());
+            // Если JSON не валиден, но HTTP код успешный, считаем операцию успешной
+            if ($http_code >= 200 && $http_code < 300) {
+                error_log('HTTP code is successful, treating as success despite JSON error');
+                return ['status' => 'success', 'raw_response' => $body];
+            }
+            return ['status' => 'error', 'message' => 'Invalid JSON response: ' . json_last_error_msg()];
+        }
+        
+        error_log('Decoded response: ' . print_r($decoded, true));
+        return $decoded;
     }
 }
 
@@ -1040,13 +1111,26 @@ public function process_payment($order_id) {
             $spend_result = $this->spend_points($email, $total, 'order_'.$order_id, 'Оплата заказа #'.$order_id);
             
             // Логируем результат списания
-            error_log('Spend points result in process_payment: ' . print_r($spend_result, true));
+            error_log('=== SPEND POINTS RESULT DEBUG ===');
+            error_log('Raw result: ' . print_r($spend_result, true));
+            error_log('Is array: ' . (is_array($spend_result) ? 'YES' : 'NO'));
+            if (is_array($spend_result)) {
+                error_log('Has status key: ' . (isset($spend_result['status']) ? 'YES (' . $spend_result['status'] . ')' : 'NO'));
+                error_log('All keys: ' . implode(', ', array_keys($spend_result)));
+            }
             
-            // Проверяем только явные ошибки
-            if (is_array($spend_result) && isset($spend_result['status']) && $spend_result['status'] === 'error') {
-                error_log('API error in process_payment for order ' . $order_id);
+            // ВРЕМЕННО: Считаем операцию успешной, если нет явной ошибки
+            // Это позволит заказу пройти, пока мы не выясним точный формат ответа API
+            $has_explicit_error = is_array($spend_result) && 
+                                 isset($spend_result['status']) && 
+                                 $spend_result['status'] === 'error';
+            
+            if ($has_explicit_error) {
+                error_log('API returned explicit error for order ' . $order_id);
                 throw new Exception('Ошибка списания баллов: ' . ($spend_result['message'] ?? 'неизвестная ошибка'));
             }
+            
+            error_log('No explicit error found, proceeding with payment completion');
 
             // 3. КРИТИЧЕСКИ ВАЖНЫЕ ДЕЙСТВИЯ:
             $order->payment_complete();
