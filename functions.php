@@ -28,6 +28,37 @@ define( 'ASTRA_THEME_ORG_VERSION', file_exists( ASTRA_THEME_DIR . 'inc/w-org-ver
 define( 'ASTRA_EXT_MIN_VER', '4.10.0' );
 
 /**
+ * Alean Loyalty API Configuration
+ */
+define( 'ALEAN_API_TOKEN', '7662742d616ccd503f9e29ac7f9e4d01' );
+define( 'ALEAN_API_GET_LP_URL', 'https://n8n.alean.ru/webhook/get-lp-email-token' );
+define( 'ALEAN_API_SPEND_LP_URL', 'https://n8n.alean.ru/webhook/lp-spending-token' );
+
+/**
+ * Вспомогательная функция для API запросов с авторизацией
+ */
+function alean_api_request($url, $data, $timeout = 15) {
+    return wp_remote_post($url, [
+        'headers' => [
+            'Content-Type' => 'application/json',
+            'Authorization' => 'Bearer ' . ALEAN_API_TOKEN
+        ],
+        'body' => json_encode($data),
+        'timeout' => $timeout
+    ]);
+}
+
+/**
+ * Добавляем CSP заголовки для решения проблемы с worker'ами
+ */
+function add_csp_headers() {
+    if (!is_admin()) {
+        header("Content-Security-Policy: script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://*.googleapis.com https://*.gstatic.com blob:; worker-src 'self' blob:;");
+    }
+}
+add_action('send_headers', 'add_csp_headers');
+
+/**
  * Load in-house compatibility.
  */
 if ( ASTRA_THEME_ORG_VERSION ) {
@@ -329,10 +360,7 @@ function get_loyalty_data_callback() {
     }
 
     $user = wp_get_current_user();
-    $response = wp_remote_post('https://n8n.alean.ru/webhook/get-lp-email', [
-        'headers' => ['Content-Type' => 'application/json'],
-        'body' => json_encode(['email' => $user->user_email])
-    ]);
+    $response = alean_api_request(ALEAN_API_GET_LP_URL, ['email' => $user->user_email]);
 
     if (is_wp_error($response)) {
         wp_send_json_error($response->get_error_message(), 500);
@@ -597,14 +625,7 @@ function init_alean_loyalty_gateway() {
  * Получение баланса пользователя
  */
 function alean_get_user_balance($email) {
-    $response = wp_remote_post(
-        'https://n8n.alean.ru/webhook/get-lp-email',
-        [
-            'headers' => ['Content-Type' => 'application/json'],
-            'body' => json_encode(['email' => $email]),
-            'timeout' => 10
-        ]
-    );
+    $response = alean_api_request(ALEAN_API_GET_LP_URL, ['email' => $email], 10);
     
     if (is_wp_error($response)) {
         return 0;
@@ -749,16 +770,9 @@ class Alean_Loyalty_WooCommerce {
     /**
      * Вспомогательные методы для работы с API
      */
-private function get_lp_data($email) {
-    $url = 'https://n8n.alean.ru/webhook/get-lp-email';
-    $args = [
-        'headers' => ['Content-Type' => 'application/json'],
-        'timeout' => 15,
-        'body' => json_encode(['email' => $email])
-    ];
-
-    error_log('Requesting LP data for email: ' . $email);
-    $response = wp_remote_post($url, $args);
+    private function get_lp_data($email) {
+        error_log('Requesting LP data for email: ' . $email);
+        $response = alean_api_request(ALEAN_API_GET_LP_URL, ['email' => $email]);
 
     if (is_wp_error($response)) {
         error_log('LP Data API Error: ' . $response->get_error_message());
@@ -778,18 +792,27 @@ private function get_lp_data($email) {
 }
     
     private function spend_loyalty_points($email, $sum, $order_id, $comment) {
-        $response = wp_remote_post(
-            'https://n8n.alean.ru/webhook/lp-spending',
-            [
-                'headers' => ['Content-Type' => 'application/json'],
-                'body' => json_encode([
-                    'email' => $email,
-                    'sum' => $sum,
-                    'eventexternalid' => $order_id,
-                    'comment' => $comment
-                ])
-            ]
-        );
+        $response = alean_api_request(ALEAN_API_SPEND_LP_URL, [
+            'email' => $email,
+            'sum' => $sum,
+            'eventexternalid' => $order_id,
+            'comment' => $comment
+        ]);
+        
+        if (is_wp_error($response)) {
+            return ['status' => 'error', 'message' => $response->get_error_message()];
+        }
+        
+        return json_decode(wp_remote_retrieve_body($response), true);
+    }
+    
+    private function spend_points($email, $sum, $order_id, $comment) {
+        $response = alean_api_request(ALEAN_API_SPEND_LP_URL, [
+            'email' => $email,
+            'sum' => $sum,
+            'eventexternalid' => $order_id,
+            'comment' => $comment
+        ]);
         
         if (is_wp_error($response)) {
             return ['status' => 'error', 'message' => $response->get_error_message()];
@@ -882,14 +905,7 @@ class Alean_Loyalty_Payment_Gateway extends WC_Payment_Gateway {
         error_log('=== PAYMENT FIELDS DEBUG ===');
         error_log('Current user email: ' . $user->user_email);
             
-        $response = wp_remote_post(
-            'https://n8n.alean.ru/webhook/get-lp-email',
-            [
-                'headers' => ['Content-Type' => 'application/json'],
-                'body' => json_encode(['email' => $user->user_email]),
-                'timeout' => 15
-            ]
-        );
+        $response = alean_api_request(ALEAN_API_GET_LP_URL, ['email' => $user->user_email]);
         
         if (is_wp_error($response)) {
             error_log('Payment fields API error: ' . $response->get_error_message());
@@ -949,14 +965,7 @@ class Alean_Loyalty_Payment_Gateway extends WC_Payment_Gateway {
         error_log('User email: ' . $email);
         error_log('Order total: ' . $order_total);
         
-        $response = wp_remote_post(
-            'https://n8n.alean.ru/webhook/get-lp-email',
-            [
-                'headers' => ['Content-Type' => 'application/json'],
-                'body' => json_encode(['email' => $email]),
-                'timeout' => 15
-            ]
-        );
+        $response = alean_api_request(ALEAN_API_GET_LP_URL, ['email' => $email]);
         
         if (is_wp_error($response)) {
             error_log('API Error: ' . $response->get_error_message());
@@ -1410,14 +1419,7 @@ function alean_auth_shortcode() {
             $email = $user->user_email;
             
        
-            $response = wp_remote_post(
-                'https://n8n.alean.ru/webhook/get-lp-email',
-                [
-                    'headers' => ['Content-Type' => 'application/json'],
-                    'body' => json_encode(['email' => $email]),
-                    'timeout' => 15
-                ]
-            );
+                    $response = alean_api_request(ALEAN_API_GET_LP_URL, ['email' => $email]);
             
             if (!is_wp_error($response)) :
                 $bonus_data = json_decode(wp_remote_retrieve_body($response), true);
@@ -1471,14 +1473,7 @@ function alean_auth_shortcode() {
         $email = $user->user_email;
         $display_name = $user->display_name;
         
-        $response = wp_remote_post(
-            'https://n8n.alean.ru/webhook/get-lp-email',
-            [
-                'headers' => ['Content-Type' => 'application/json'],
-                'body' => json_encode(['email' => $email]),
-                'timeout' => 15
-            ]
-        );
+        $response = alean_api_request(ALEAN_API_GET_LP_URL, ['email' => $email]);
         
         if (!is_wp_error($response)) :
             $bonus_data = json_decode(wp_remote_retrieve_body($response), true);
