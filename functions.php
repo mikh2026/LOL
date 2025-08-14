@@ -208,6 +208,8 @@ require_once ASTRA_THEME_DIR . 'inc/core/deprecated/deprecated-functions.php';
 
 
 
+//-=-=-= Настройка валюты и цен =-=-=-//
+
 // Удаляем цену в валюте, оставляем только баллы
 add_filter('woocommerce_get_price_html', 'replace_money_with_points', 10, 2);
 function replace_money_with_points($price, $product) {
@@ -316,7 +318,7 @@ function custom_currency_symbol_image($currency_symbol, $currency) {
 
 
 
-// =============================
+//-=-=-= API и AJAX обработчики =-=-=-//
 
 add_action('wp_ajax_get_loyalty_data', 'get_loyalty_data_callback');
 add_action('wp_ajax_nopriv_get_loyalty_data', 'auth_required');
@@ -701,12 +703,15 @@ class Alean_Loyalty_WooCommerce {
             'Оплата заказа #' . $order_id
         );
         
-if (!is_array($result) || !isset($result['status']) || $result['status'] !== 'success') {
-    throw new Exception('Заказ оформлен! Ваши баллы зарезервированы, менеджер скоро обработает Ваш заказ ' . ($result['message'] ?? ''));
+// ИСПРАВЛЕНО: убираем неправильное сообщение об ошибке
+if (!is_array($result) || !isset($result['status'])) {
+    error_log('Loyalty payment API error for order ' . $order_id . ': ' . print_r($result, true));
+    throw new Exception('Ошибка при списании баллов');
 }
         
         // Помечаем заказ как оплаченный
         $order->payment_complete();
+        $order->add_order_note('Оплачено баллами. Списано: ' . $total . ' баллов');
     }
     
     //-=-=-= Оплата баллами =-=-=-//
@@ -949,11 +954,12 @@ public function process_payment($order_id) {
             throw new Exception('Недостаточно баллов. Доступно: ' . $balance_data['total_points']);
         }
 
-        // 2. Списание баллов (упрощенный вариант без проверки ответа)
-        $this->spend_points($email, $total, 'order_'.$order_id, 'Оплата заказа #'.$order_id);
+                    // 2. Списание баллов
+            $spend_result = $this->spend_points($email, $total, 'order_'.$order_id, 'Оплата заказа #'.$order_id);
 
-        // 3. КРИТИЧЕСКИ ВАЖНЫЕ ДЕЙСТВИЯ:
-        $order->update_status('completed', __('Оплачено баллами', 'woocommerce'));
+            // 3. КРИТИЧЕСКИ ВАЖНЫЕ ДЕЙСТВИЯ:
+            $order->payment_complete();
+            $order->add_order_note('Оплачено баллами. Списано: ' . $total . ' баллов');
         
         // 4. Очистка корзины ДО редиректа
         if (function_exists('WC') && WC()->cart) {
@@ -1086,7 +1092,8 @@ add_filter('rest_authentication_errors', function($result) {
 
 
 
-//=============
+//-=-=-= Страница настроек темы =-=-=-//
+
 function custom_theme_settings_page() {
     add_menu_page(
         'Настройки темы', 
@@ -1463,7 +1470,8 @@ function alean_auth_shortcode() {
     return ob_get_clean();
 }
 add_shortcode('alean_auth', 'alean_auth_shortcode');
-//===========
+
+//-=-=-= Авторизация и пользователи =-=-=-//
 
 function register_user_menu() {
     register_nav_menu('user-menu', 'Меню пользователя');
@@ -1499,8 +1507,13 @@ add_action('woocommerce_before_add_to_cart_button', 'woocommerce_template_single
 
 
 
-//
+//-=-=-= WooCommerce настройки =-=-=-//
 
+// Перемещаем цену в карточке товара
+remove_action('woocommerce_single_product_summary', 'woocommerce_template_single_price', 10);
+add_action('woocommerce_before_add_to_cart_button', 'woocommerce_template_single_price', 5);
+
+// Добавляем кастомный класс к заголовку "Цвет"
 function add_custom_class_to_specific_heading($block_content, $block) {
     if ($block['blockName'] === 'core/heading' && 
         isset($block['attrs']['level']) && 
@@ -1586,7 +1599,8 @@ function transfer_phone_to_checkout($value, $input) {
 
 
 
-//============
+//-=-=-= Шорткоды =-=-=-//
+
 function partners_benefits_shortcode() {
     ob_start();
     ?>
@@ -1640,6 +1654,9 @@ function partners_benefits_shortcode() {
 add_shortcode('partners_benefits', 'partners_benefits_shortcode');
 
 
+
+
+//-=-=-= Подключение ресурсов =-=-=-//
 
 function enqueue_swiper_assets() {
    
@@ -1763,6 +1780,192 @@ add_filter('woocommerce_product_add_to_cart_text', function($text, $product) {
     }
     return 'В корзину';
 }, 9999, 2);
+
+
+
+
+//-=-=-= AJAX уведомления о добавлении в корзину =-=-=-//
+
+// Убираем стандартные уведомления WooCommerce
+add_filter('wc_add_to_cart_message_html', '__return_false');
+add_filter('woocommerce_cart_redirect_after_error', '__return_false');
+
+// Включаем AJAX для добавления в корзину на всех страницах
+add_filter('woocommerce_loop_add_to_cart_link', 'add_ajax_to_cart_class', 10, 2);
+function add_ajax_to_cart_class($link, $product) {
+    // Добавляем класс ajax_add_to_cart для всех товаров
+    $link = str_replace('add_to_cart_button', 'add_to_cart_button ajax_add_to_cart', $link);
+    return $link;
+}
+
+// Обработчик AJAX добавления в корзину
+add_action('wp_ajax_woocommerce_ajax_add_to_cart', 'woocommerce_ajax_add_to_cart');
+add_action('wp_ajax_nopriv_woocommerce_ajax_add_to_cart', 'woocommerce_ajax_add_to_cart');
+
+function woocommerce_ajax_add_to_cart() {
+    $product_id = apply_filters('woocommerce_add_to_cart_product_id', absint($_POST['product_id']));
+    $quantity = empty($_POST['quantity']) ? 1 : wc_stock_amount($_POST['quantity']);
+    $variation_id = absint($_POST['variation_id']);
+    $passed_validation = apply_filters('woocommerce_add_to_cart_validation', true, $product_id, $quantity);
+    $product_status = get_post_status($product_id);
+
+    if ($passed_validation && WC()->cart->add_to_cart($product_id, $quantity, $variation_id) && 'publish' === $product_status) {
+        do_action('woocommerce_ajax_added_to_cart', $product_id);
+
+        if ('yes' === get_option('woocommerce_cart_redirect_after_add')) {
+            wc_add_to_cart_message(array($product_id => $quantity), true);
+        }
+
+        WC_AJAX::get_refreshed_fragments();
+    } else {
+        $data = array(
+            'error' => true,
+            'product_url' => apply_filters('woocommerce_cart_redirect_after_error', get_permalink($product_id), $product_id)
+        );
+        echo wp_send_json($data);
+    }
+    wp_die();
+}
+
+// Добавляем JavaScript для AJAX уведомлений
+add_action('wp_footer', 'ajax_cart_notifications_script');
+function ajax_cart_notifications_script() {
+    if (is_admin()) return;
+    ?>
+    <script type="text/javascript">
+    jQuery(document).ready(function($) {
+        // Создаем контейнер для уведомлений если его нет
+        if ($('#cart-notifications').length === 0) {
+            $('body').append('<div id="cart-notifications" style="position:fixed;top:20px;right:20px;z-index:9999;"></div>');
+        }
+
+        // Функция показа уведомления
+        function showCartNotification(message, type = 'success') {
+            const notification = $('<div class="cart-notification cart-notification-' + type + '" style="background:' + (type === 'success' ? '#4CAF50' : '#f44336') + ';color:white;padding:15px 20px;margin-bottom:10px;border-radius:5px;box-shadow:0 2px 10px rgba(0,0,0,0.2);animation:slideIn 0.3s ease;max-width:300px;word-wrap:break-word;">' + message + '</div>');
+            
+            $('#cart-notifications').append(notification);
+            
+            // Автоматически скрываем через 3 секунды
+            setTimeout(function() {
+                notification.fadeOut(300, function() {
+                    $(this).remove();
+                });
+            }, 3000);
+        }
+
+        // Добавляем CSS анимацию
+        if ($('#cart-notification-styles').length === 0) {
+            $('head').append('<style id="cart-notification-styles">@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}</style>');
+        }
+
+        // Обработчик для кнопок добавления в корзину в каталоге
+        $(document).on('click', '.ajax_add_to_cart', function(e) {
+            e.preventDefault();
+            
+            var $thisbutton = $(this);
+            var $form = $thisbutton.closest('form.cart');
+            var id = $thisbutton.val();
+            var product_qty = $form.find('input[name=quantity]').val() || 1;
+            var product_id = $form.length ? $form.find('input[name=product_id]').val() || id : id;
+            var variation_id = $form.find('input[name=variation_id]').val() || 0;
+
+            var data = {
+                action: 'woocommerce_ajax_add_to_cart',
+                product_id: product_id,
+                product_sku: '',
+                quantity: product_qty,
+                variation_id: variation_id,
+            };
+
+            $thisbutton.removeClass('added').addClass('loading');
+
+            // Trigger event
+            $(document.body).trigger('adding_to_cart', [$thisbutton, data]);
+
+            $.post(wc_add_to_cart_params.ajax_url, data, function(response) {
+                if (!response) {
+                    return;
+                }
+
+                var this_page = window.location.toString();
+                this_page = this_page.replace('add-to-cart', 'added-to-cart');
+
+                if (response.error && response.product_url) {
+                    window.location = response.product_url;
+                    return;
+                }
+
+                // Показываем уведомление об успешном добавлении
+                var productName = $thisbutton.closest('.product').find('.woocommerce-loop-product__title').text() || 'Товар';
+                showCartNotification('✓ ' + productName + ' добавлен в корзину!', 'success');
+
+                // Обновляем фрагменты корзины
+                if (response.fragments) {
+                    $.each(response.fragments, function(key, value) {
+                        $(key).replaceWith(value);
+                    });
+                }
+
+                $thisbutton.addClass('added').removeClass('loading');
+
+                // Trigger event
+                $(document.body).trigger('added_to_cart', [response.fragments, response.cart_hash, $thisbutton]);
+                
+            }).fail(function() {
+                showCartNotification('Ошибка при добавлении товара в корзину', 'error');
+                $thisbutton.removeClass('loading');
+            });
+
+            return false;
+        });
+
+        // Обработчик для страницы товара
+        $('form.cart').on('submit', function(e) {
+            var $form = $(this);
+            var $submitButton = $form.find('button[type="submit"]');
+            
+            // Только если это AJAX запрос
+            if ($submitButton.hasClass('single_add_to_cart_button') && !$form.hasClass('no-ajax')) {
+                e.preventDefault();
+                
+                var formData = $form.serialize();
+                formData += '&action=woocommerce_ajax_add_to_cart';
+                
+                $submitButton.addClass('loading').prop('disabled', true);
+                
+                $.post(wc_add_to_cart_params.ajax_url, formData, function(response) {
+                    if (!response) {
+                        return;
+                    }
+
+                    if (response.error && response.product_url) {
+                        window.location = response.product_url;
+                        return;
+                    }
+
+                    // Показываем уведомление
+                    var productName = $('.product_title').text() || 'Товар';
+                    showCartNotification('✓ ' + productName + ' добавлен в корзину!', 'success');
+
+                    // Обновляем фрагменты корзины
+                    if (response.fragments) {
+                        $.each(response.fragments, function(key, value) {
+                            $(key).replaceWith(value);
+                        });
+                    }
+
+                    $submitButton.removeClass('loading').prop('disabled', false);
+                    
+                }).fail(function() {
+                    showCartNotification('Ошибка при добавлении товара в корзину', 'error');
+                    $submitButton.removeClass('loading').prop('disabled', false);
+                });
+            }
+        });
+    });
+    </script>
+    <?php
+}
 
 
 
