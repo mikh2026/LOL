@@ -1949,15 +1949,28 @@ add_filter('woocommerce_product_add_to_cart_text', function($text, $product) {
 
 //-=-=-= AJAX уведомления о добавлении в корзину =-=-=-//
 
-// Убираем стандартные уведомления WooCommerce
-add_filter('wc_add_to_cart_message_html', '__return_false');
+// Убираем стандартные уведомления WooCommerce (кроме корзины)
+add_filter('wc_add_to_cart_message_html', 'hide_add_to_cart_message_except_cart');
 add_filter('woocommerce_cart_redirect_after_error', '__return_false');
+
+function hide_add_to_cart_message_except_cart($message) {
+    // Показываем уведомления только на странице корзины
+    if (is_cart()) {
+        return $message;
+    }
+    return false; // Скрываем везде, кроме корзины
+}
 
 // Убираем системные уведомления об ошибках (включая "выбрать опции товара")
 add_filter('woocommerce_add_error', '__return_false');
 add_filter('woocommerce_add_notice', 'filter_woocommerce_notices', 10, 2);
 
 function filter_woocommerce_notices($message, $notice_type) {
+    // На странице корзины показываем все уведомления
+    if (is_cart()) {
+        return $message;
+    }
+    
     // Убираем уведомления об ошибках, связанных с выбором опций
     if ($notice_type === 'error') {
         // Проверяем, содержит ли сообщение текст о выборе опций
@@ -1969,6 +1982,15 @@ function filter_woocommerce_notices($message, $notice_type) {
             return false;
         }
     }
+    
+    // Скрываем системные уведомления о добавлении товара (кроме корзины)
+    if ($notice_type === 'success' || $notice_type === 'notice') {
+        if (strpos($message, 'добавлен в корзину') !== false || 
+            strpos($message, 'added to your cart') !== false) {
+            return false;
+        }
+    }
+    
     return $message;
 }
 
@@ -1978,6 +2000,11 @@ add_action('woocommerce_before_shop_loop', 'clear_woocommerce_notices', 5);
 add_action('wp_loaded', 'clear_woocommerce_notices');
 
 function clear_woocommerce_notices() {
+    // На странице корзины не очищаем уведомления
+    if (is_cart()) {
+        return;
+    }
+    
     if (function_exists('wc_clear_notices')) {
         // Получаем все уведомления
         $notices = wc_get_notices();
@@ -1989,6 +2016,17 @@ function clear_woocommerce_notices() {
                     $message_text = is_array($message) ? $message['notice'] : $message;
                     if (strpos($message_text, 'Перейдите в') !== false || 
                         strpos($message_text, 'чтобы выбрать опции') !== false) {
+                        unset($notices[$type][$key]);
+                    }
+                }
+            }
+            
+            // Удаляем системные уведомления о добавлении товара
+            if ($type === 'success' || $type === 'notice') {
+                foreach ($messages as $key => $message) {
+                    $message_text = is_array($message) ? $message['notice'] : $message;
+                    if (strpos($message_text, 'добавлен в корзину') !== false || 
+                        strpos($message_text, 'added to your cart') !== false) {
                         unset($notices[$type][$key]);
                     }
                 }
@@ -2047,17 +2085,21 @@ function woocommerce_ajax_add_to_cart() {
 // Добавляем CSS для скрытия системных уведомлений
 add_action('wp_head', 'hide_woocommerce_notices_css');
 function hide_woocommerce_notices_css() {
+    // На странице корзины не скрываем уведомления
+    if (is_cart()) {
+        return;
+    }
     ?>
     <style>
-    /* Скрываем системные уведомления WooCommerce */
-    .woocommerce-notices-wrapper .woocommerce-error,
-    .woocommerce-notices-wrapper .woocommerce-message,
-    .woocommerce-notices-wrapper .woocommerce-info {
+    /* Скрываем системные уведомления WooCommerce (кроме корзины) */
+    body:not(.woocommerce-cart) .woocommerce-notices-wrapper .woocommerce-error,
+    body:not(.woocommerce-cart) .woocommerce-notices-wrapper .woocommerce-message,
+    body:not(.woocommerce-cart) .woocommerce-notices-wrapper .woocommerce-info {
         display: none !important;
     }
     
-    /* Скрываем весь контейнер уведомлений, если он пустой */
-    .woocommerce-notices-wrapper:empty {
+    /* Скрываем весь контейнер уведомлений, если он пустой (кроме корзины) */
+    body:not(.woocommerce-cart) .woocommerce-notices-wrapper:empty {
         display: none !important;
     }
     </style>
@@ -2096,6 +2138,11 @@ function ajax_cart_notifications_script() {
 
         // Функция для удаления системных уведомлений WooCommerce
         function removeWooCommerceNotices() {
+            // На странице корзины не удаляем уведомления
+            if ($('body').hasClass('woocommerce-cart')) {
+                return;
+            }
+            
             $('.woocommerce-notices-wrapper .woocommerce-error, .woocommerce-notices-wrapper .woocommerce-message, .woocommerce-notices-wrapper .woocommerce-info').remove();
             
             // Скрываем пустой контейнер
@@ -2105,8 +2152,8 @@ function ajax_cart_notifications_script() {
         // Удаляем уведомления при загрузке страницы
         removeWooCommerceNotices();
         
-        // Наблюдаем за изменениями в DOM и удаляем новые уведомления
-        if (typeof MutationObserver !== 'undefined') {
+        // Наблюдаем за изменениями в DOM и удаляем новые уведомления (кроме корзины)
+        if (typeof MutationObserver !== 'undefined' && !$('body').hasClass('woocommerce-cart')) {
             var observer = new MutationObserver(function(mutations) {
                 mutations.forEach(function(mutation) {
                     if (mutation.type === 'childList') {
