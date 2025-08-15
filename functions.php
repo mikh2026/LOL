@@ -1996,12 +1996,17 @@ function filter_woocommerce_notices($message, $notice_type) {
 
 // Дополнительная защита - перехватываем все уведомления WooCommerce
 add_action('woocommerce_before_single_product_summary', 'clear_woocommerce_notices', 5);
-add_action('woocommerce_before_shop_loop', 'clear_woocommerce_notices', 5);
 add_action('wp_loaded', 'clear_woocommerce_notices');
 
 function clear_woocommerce_notices() {
     // На странице корзины не очищаем уведомления
     if (is_cart()) {
+        return;
+    }
+    
+    // Не очищаем уведомления на страницах с фильтрами WooCommerce
+    if (is_shop() || is_product_category() || is_product_tag() || is_tax('product_cat') || is_tax('product_tag')) {
+        // На страницах магазина и категорий оставляем уведомления, связанные с фильтрацией
         return;
     }
     
@@ -2043,6 +2048,104 @@ function clear_woocommerce_notices() {
         }
     }
 }
+
+// Функция для отладки фильтра WooCommerce
+function debug_woocommerce_filter() {
+    if (is_shop() || is_product_category() || is_product_tag() || is_tax('product_cat') || is_tax('product_tag')) {
+        // Логируем информацию о текущем запросе
+        if (function_exists('WC')) {
+            $current_query = WC()->query;
+            if ($current_query) {
+                error_log('=== WOOCOMMERCE FILTER DEBUG ===');
+                error_log('Current query: ' . print_r($current_query, true));
+                error_log('Query vars: ' . print_r($current_query->query_vars, true));
+                
+                // Проверяем активные фильтры
+                $active_filters = WC()->query->get_main_query();
+                if ($active_filters) {
+                    error_log('Main query: ' . print_r($active_filters, true));
+                }
+            }
+        }
+    }
+}
+add_action('wp_loaded', 'debug_woocommerce_filter', 20);
+
+// Функция для проверки состояния фильтра WooCommerce
+function check_woocommerce_filter_status() {
+    if (is_shop() || is_product_category() || is_product_tag() || is_tax('product_cat') || is_tax('product_tag')) {
+        // Проверяем, загружен ли WooCommerce
+        if (!function_exists('WC')) {
+            error_log('WooCommerce not loaded');
+            return;
+        }
+        
+        // Проверяем основные компоненты WooCommerce
+        if (!WC()->query) {
+            error_log('WooCommerce query object not available');
+            return;
+        }
+        
+        // Проверяем активные фильтры
+        $current_filters = WC()->query->get_main_query();
+        if ($current_filters) {
+            error_log('WooCommerce main query is active');
+        } else {
+            error_log('WooCommerce main query is not active');
+        }
+        
+        // Проверяем настройки фильтрации
+        $filter_settings = get_option('woocommerce_default_catalog_orderby');
+        error_log('WooCommerce default catalog orderby: ' . $filter_settings);
+    }
+}
+add_action('wp_loaded', 'check_woocommerce_filter_status', 25);
+
+// Функция для восстановления стандартного поведения фильтра WooCommerce
+function restore_woocommerce_filter_behavior() {
+    // Убираем все кастомные фильтры, которые могут мешать работе WooCommerce
+    remove_filter('woocommerce_product_query', '__return_false');
+    remove_filter('woocommerce_product_query_meta_query', '__return_false');
+    remove_filter('woocommerce_product_query_tax_query', '__return_false');
+    
+    // Восстанавливаем стандартные хуки WooCommerce
+    if (function_exists('WC')) {
+        // Убеждаемся, что основные хуки WooCommerce работают
+        add_action('woocommerce_before_shop_loop', 'woocommerce_result_count', 20);
+        add_action('woocommerce_before_shop_loop', 'woocommerce_catalog_ordering', 30);
+        
+        // Восстанавливаем стандартную пагинацию
+        add_action('woocommerce_after_shop_loop', 'woocommerce_pagination', 10);
+    }
+}
+add_action('wp_loaded', 'restore_woocommerce_filter_behavior', 30);
+
+// Функция для проверки и восстановления стандартных виджетов WooCommerce
+function check_woocommerce_widgets() {
+    // Проверяем, зарегистрированы ли стандартные виджеты WooCommerce
+    if (function_exists('WC')) {
+        // Проверяем виджет фильтра по атрибутам
+        if (!is_active_widget(false, false, 'woocommerce_layered_nav')) {
+            error_log('WooCommerce layered navigation widget is not active');
+        }
+        
+        // Проверяем виджет фильтра по цене
+        if (!is_active_widget(false, false, 'woocommerce_price_filter')) {
+            error_log('WooCommerce price filter widget is not active');
+        }
+        
+        // Проверяем виджет категорий
+        if (!is_active_widget(false, false, 'woocommerce_product_categories')) {
+            error_log('WooCommerce product categories widget is not active');
+        }
+        
+        // Проверяем виджет тегов
+        if (!is_active_widget(false, false, 'woocommerce_product_tag_cloud')) {
+            error_log('WooCommerce product tag cloud widget is not active');
+        }
+    }
+}
+add_action('wp_loaded', 'check_woocommerce_widgets', 35);
 
 // Включаем AJAX для добавления в корзину на всех страницах
 add_filter('woocommerce_loop_add_to_cart_link', 'add_ajax_to_cart_class', 10, 2);
