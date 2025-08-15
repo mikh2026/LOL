@@ -1786,8 +1786,9 @@ add_filter('woocommerce_product_add_to_cart_text', function($text, $product) {
 
 //-=-=-= AJAX уведомления о добавлении в корзину =-=-=-//
 
-// Убираем стандартные уведомления WooCommerce
-add_filter('wc_add_to_cart_message_html', '__return_false');
+// Настраиваем уведомления WooCommerce
+// Включаем системные уведомления, но с кастомными стилями
+add_filter('wc_add_to_cart_message_html', 'custom_add_to_cart_message_html', 10, 2);
 add_filter('woocommerce_cart_redirect_after_error', '__return_false');
 
 // Включаем AJAX для добавления в корзину на всех страницах
@@ -1827,6 +1828,55 @@ function woocommerce_ajax_add_to_cart() {
     wp_die();
 }
 
+// Кастомная функция для уведомлений WooCommerce
+function custom_add_to_cart_message_html($message, $products) {
+    if (empty($products)) {
+        return $message;
+    }
+    
+    $titles = array();
+    $count = 0;
+    
+    foreach ($products as $product_id => $quantity) {
+        $titles[] = apply_filters('woocommerce_add_to_cart_item_name_in_quotes', sprintf(_x('"%s"', 'Item name in quotes', 'woocommerce'), strip_tags(get_the_title($product_id))), $product_id);
+        $count += $quantity;
+    }
+    
+    $titles = array_filter($titles);
+    $added_text = sprintf(_n('%s has been added to your cart.', '%s have been added to your cart.', $count, 'woocommerce'), wc_format_list_of_items($titles));
+    
+    // Возвращаем HTML для системного уведомления WooCommerce
+    return sprintf(
+        '<div class="woocommerce-message woocommerce-message-success" role="alert">
+            <div class="custom-notification" style="background: white; color: black; border: 2px solid #4CAF50; padding: 15px 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.15); margin: 10px 0; position: relative;">
+                <span style="color: #4CAF50; font-weight: bold;">✓</span> %s
+                <a href="%s" class="button wc-forward" style="float: right; background: #4CAF50; color: white; padding: 8px 15px; text-decoration: none; border-radius: 5px; font-size: 12px;">%s</a>
+            </div>
+        </div>',
+        esc_html($added_text),
+        esc_url(wc_get_cart_url()),
+        esc_html__('View cart', 'woocommerce')
+    );
+}
+
+// Кастомизируем ошибки WooCommerce
+add_filter('woocommerce_add_to_cart_validation', 'custom_add_to_cart_validation', 10, 5);
+function custom_add_to_cart_validation($passed, $product_id, $quantity, $variation_id = '', $variations = '') {
+    if (!$passed) {
+        // Добавляем кастомное сообщение об ошибке
+        wc_add_notice(
+            sprintf(
+                '<div class="custom-notification" style="background: white; color: #f44336; border: 2px solid #f44336; padding: 15px 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.15); margin: 10px 0;">
+                    <span style="color: #f44336; font-weight: bold;">✗</span> %s
+                </div>',
+                esc_html__('Product could not be added to cart. Please check the product details.', 'woocommerce')
+            ),
+            'error'
+        );
+    }
+    return $passed;
+}
+
 // Добавляем JavaScript для AJAX уведомлений
 add_action('wp_footer', 'ajax_cart_notifications_script');
 function ajax_cart_notifications_script() {
@@ -1841,22 +1891,201 @@ function ajax_cart_notifications_script() {
 
         // Функция показа уведомления
         function showCartNotification(message, type = 'success') {
-            const notification = $('<div class="cart-notification cart-notification-' + type + '" style="background:' + (type === 'success' ? '#4CAF50' : '#f44336') + ';color:white;padding:15px 20px;margin-bottom:10px;border-radius:5px;box-shadow:0 2px 10px rgba(0,0,0,0.2);animation:slideIn 0.3s ease;max-width:300px;word-wrap:break-word;">' + message + '</div>');
+            // Создаем контейнер для уведомлений, если его нет
+            if ($('#cart-notifications').length === 0) {
+                $('body').append('<div id="cart-notifications" style="position:fixed;top:20px;right:20px;z-index:9999;max-width:350px;"></div>');
+            }
+            
+            // Определяем стили в зависимости от типа уведомления
+            let styles = '';
+            if (type === 'success') {
+                styles = 'background: white; color: black; border: 2px solid #4CAF50;';
+            } else if (type === 'error') {
+                styles = 'background: white; color: #f44336; border: 2px solid #f44336;';
+            } else {
+                styles = 'background: white; color: black; border: 2px solid #2196F3;';
+            }
+            
+            const notification = $('<div class="cart-notification cart-notification-' + type + '" style="' + styles + 'padding:15px 20px;margin-bottom:10px;border-radius:8px;box-shadow:0 4px 15px rgba(0,0,0,0.15);animation:slideIn 0.4s ease;max-width:350px;word-wrap:break-word;font-size:14px;font-weight:500;position:relative;overflow:hidden;">' + message + '</div>');
             
             $('#cart-notifications').append(notification);
             
-            // Автоматически скрываем через 3 секунды
-            setTimeout(function() {
-                notification.fadeOut(300, function() {
+            // Добавляем обработчик клика для закрытия
+            notification.on('click', function() {
+                $(this).fadeOut(300, function() {
                     $(this).remove();
                 });
-            }, 3000);
+            });
+            
+            // Автоматически скрываем через 4 секунды
+            setTimeout(function() {
+                notification.fadeOut(400, function() {
+                    $(this).remove();
+                });
+            }, 4000);
         }
 
-        // Добавляем CSS анимацию
+        // Добавляем CSS анимацию и стили
         if ($('#cart-notification-styles').length === 0) {
-            $('head').append('<style id="cart-notification-styles">@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}</style>');
+            $('head').append('<style id="cart-notification-styles">
+                @keyframes slideIn {
+                    from { transform: translateX(100%); opacity: 0; }
+                    to { transform: translateX(0); opacity: 1; }
+                }
+                @keyframes slideOut {
+                    from { transform: translateX(0); opacity: 1; }
+                    to { transform: translateX(100%); opacity: 0; }
+                }
+                .cart-notification {
+                    cursor: pointer;
+                    transition: all 0.3s ease;
+                }
+                .cart-notification:hover {
+                    transform: translateX(-5px);
+                    box-shadow: 0 6px 20px rgba(0,0,0,0.2) !important;
+                }
+                .cart-notification::before {
+                    content: "";
+                    position: absolute;
+                    left: 0;
+                    top: 0;
+                    bottom: 0;
+                    width: 4px;
+                    background: inherit;
+                }
+                .cart-notification::after {
+                    content: "×";
+                    position: absolute;
+                    right: 10px;
+                    top: 50%;
+                    transform: translateY(-50%);
+                    font-size: 18px;
+                    font-weight: bold;
+                    opacity: 0.7;
+                    cursor: pointer;
+                }
+                .cart-notification:hover::after {
+                    opacity: 1;
+                }
+                
+                /* Стили для системных уведомлений WooCommerce */
+                .woocommerce-message .custom-notification {
+                    background: white !important;
+                    color: black !important;
+                    border: 2px solid #4CAF50 !important;
+                    padding: 15px 20px !important;
+                    border-radius: 8px !important;
+                    box-shadow: 0 4px 15px rgba(0,0,0,0.15) !important;
+                    margin: 10px 0 !important;
+                    position: relative !important;
+                    font-size: 14px !important;
+                    font-weight: 500 !important;
+                }
+                
+                .woocommerce-error .custom-notification {
+                    background: white !important;
+                    color: #f44336 !important;
+                    border: 2px solid #f44336 !important;
+                }
+                
+                .woocommerce-info .custom-notification {
+                    background: white !important;
+                    color: black !important;
+                    border: 2px solid #2196F3 !important;
+                }
+                
+                /* Скрываем стандартные уведомления WooCommerce */
+                .woocommerce-message:not(.woocommerce-message-success),
+                .woocommerce-error:not(.woocommerce-error-custom),
+                .woocommerce-info:not(.woocommerce-info-custom) {
+                    display: none !important;
+                }
+                
+                /* Стили для кнопки закрытия */
+                .close-notice {
+                    transition: opacity 0.3s ease;
+                }
+                .close-notice:hover {
+                    opacity: 1 !important;
+                }
+                
+                /* Позиционирование для системных уведомлений */
+                .woocommerce-message,
+                .woocommerce-error,
+                .woocommerce-info {
+                    position: relative !important;
+                    padding-right: 40px !important;
+                }
+            </style>');
         }
+        
+        // Обработка системных уведомлений WooCommerce
+        function processWooCommerceNotifications() {
+            // Обрабатываем успешные уведомления
+            $('.woocommerce-message:not(.processed)').each(function() {
+                var $notice = $(this);
+                $notice.addClass('processed');
+                
+                // Добавляем кнопку закрытия
+                if (!$notice.find('.close-notice').length) {
+                    $notice.append('<span class="close-notice" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:18px;font-weight:bold;opacity:0.7;">×</span>');
+                }
+                
+                // Обработчик закрытия
+                $notice.find('.close-notice').on('click', function() {
+                    $notice.fadeOut(300, function() {
+                        $(this).remove();
+                    });
+                });
+                
+                // Автоматически скрываем через 5 секунд
+                setTimeout(function() {
+                    if ($notice.is(':visible')) {
+                        $notice.fadeOut(400, function() {
+                            $(this).remove();
+                        });
+                    }
+                }, 5000);
+            });
+            
+            // Обрабатываем ошибки
+            $('.woocommerce-error:not(.processed)').each(function() {
+                var $notice = $(this);
+                $notice.addClass('processed');
+                
+                // Добавляем кнопку закрытия
+                if (!$notice.find('.close-notice').length) {
+                    $notice.append('<span class="close-notice" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:18px;font-weight:bold;opacity:0.7;">×</span>');
+                }
+                
+                // Обработчик закрытия
+                $notice.find('.close-notice').on('click', function() {
+                    $notice.fadeOut(300, function() {
+                        $(this).remove();
+                    });
+                });
+                
+                // Автоматически скрываем через 8 секунд (ошибки показываем дольше)
+                setTimeout(function() {
+                    if ($notice.is(':visible')) {
+                        $notice.fadeOut(400, function() {
+                            $(this).remove();
+                        });
+                    }
+                }, 8000);
+            });
+        }
+        
+        // Запускаем обработку уведомлений при загрузке страницы
+        processWooCommerceNotifications();
+        
+        // Обрабатываем новые уведомления, которые могут появиться динамически
+        $(document.body).on('added_to_cart', function() {
+            setTimeout(processWooCommerceNotifications, 100);
+        });
+        
+        // Обрабатываем уведомления каждые 2 секунды (для динамически добавленных)
+        setInterval(processWooCommerceNotifications, 2000);
 
         // Обработчик для кнопок добавления в корзину в каталоге
         $(document).on('click', '.ajax_add_to_cart', function(e) {
