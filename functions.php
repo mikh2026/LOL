@@ -1967,6 +1967,123 @@ function ajax_cart_notifications_script() {
     <?php
 }
 
+/**
+ * Исправление проблем с виджетом фильтра WooCommerce
+ */
+
+// Добавляем CSP заголовки для разрешения Web Worker'ов
+add_action('wp_headers', 'add_csp_headers_for_woocommerce_blocks');
+function add_csp_headers_for_woocommerce_blocks() {
+    if (!is_admin()) {
+        $csp_directives = array(
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://*.googleapis.com https://*.gstatic.com blob:",
+            "worker-src 'self' blob: data:",
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://*.googleapis.com https://*.gstatic.com",
+            "img-src 'self' data: blob: https:",
+            "font-src 'self' https://cdn.jsdelivr.net https://*.googleapis.com https://*.gstatic.com",
+            "connect-src 'self' https: wss:",
+            "frame-src 'self' https:",
+            "object-src 'none'",
+            "base-uri 'self'"
+        );
+        
+        $csp_header = 'Content-Security-Policy: ' . implode('; ', $csp_directives);
+        header($csp_header);
+    }
+}
+
+// Убеждаемся, что WooCommerce REST API доступен
+add_action('init', 'ensure_woocommerce_rest_api_available');
+function ensure_woocommerce_rest_api_available() {
+    if (class_exists('WooCommerce')) {
+        // Проверяем, что REST API включен
+        if (!get_option('permalink_structure')) {
+            update_option('permalink_structure', '/%postname%/');
+        }
+        
+        // Убеждаемся, что WooCommerce Blocks поддерживаются
+        if (!class_exists('Automattic\WooCommerce\Blocks\Package')) {
+            // Если WooCommerce Blocks не установлен, выводим предупреждение
+            add_action('admin_notices', function() {
+                echo '<div class="notice notice-warning is-dismissible">';
+                echo '<p><strong>Внимание:</strong> Для корректной работы виджетов фильтра необходимо установить плагин WooCommerce Blocks.</p>';
+                echo '</div>';
+            });
+        }
+    }
+}
+
+// Исправляем проблему с загрузкой фильтров WooCommerce
+add_action('wp_enqueue_scripts', 'fix_woocommerce_blocks_loading');
+function fix_woocommerce_blocks_loading() {
+    if (class_exists('WooCommerce') && !is_admin()) {
+        // Добавляем скрипт для исправления загрузки фильтров
+        wp_add_inline_script('wc-blocks-registry', '
+            // Исправление для загрузки фильтров WooCommerce
+            document.addEventListener("DOMContentLoaded", function() {
+                // Ждем загрузки WooCommerce Blocks
+                if (typeof wc && wc.blocksRegistry) {
+                    // Проверяем доступность маршрутов
+                    if (wc.blocksRegistry.hasRoute && !wc.blocksRegistry.hasRoute("/wc/store/v1")) {
+                        console.warn("WooCommerce REST API недоступен. Проверьте настройки постоянных ссылок.");
+                        
+                        // Показываем сообщение пользователю
+                        const filterWrappers = document.querySelectorAll(".wp-block-woocommerce-filter-wrapper");
+                        filterWrappers.forEach(function(wrapper) {
+                            const loadingElement = wrapper.querySelector(".is-loading");
+                            if (loadingElement) {
+                                loadingElement.innerHTML = "<p style=\'color: #d63638;\'>Ошибка загрузки фильтра. Обновите страницу.</p>";
+                                loadingElement.classList.remove("is-loading");
+                            }
+                        });
+                    }
+                }
+            });
+        ');
+    }
+}
+
+// Добавляем поддержку CORS для WooCommerce REST API
+add_action('rest_api_init', 'add_woocommerce_cors_support');
+function add_woocommerce_cors_support() {
+    if (class_exists('WooCommerce')) {
+        // Добавляем CORS заголовки для WooCommerce REST API
+        add_filter('rest_pre_serve_request', function($value) {
+            header('Access-Control-Allow-Origin: ' . get_site_url());
+            header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+            header('Access-Control-Allow-Credentials: true');
+            header('Access-Control-Allow-Headers: Content-Type, X-WP-Nonce, Authorization');
+            return $value;
+        });
+    }
+}
+
+// Проверяем и исправляем настройки WooCommerce
+add_action('admin_init', 'check_woocommerce_settings');
+function check_woocommerce_settings() {
+    if (class_exists('WooCommerce')) {
+        // Проверяем настройки постоянных ссылок
+        if (get_option('permalink_structure') === '') {
+            add_action('admin_notices', function() {
+                echo '<div class="notice notice-error is-dismissible">';
+                echo '<p><strong>Критическая ошибка:</strong> WooCommerce требует настройки постоянных ссылок. Перейдите в <a href="' . admin_url('options-permalink.php') . '">Настройки > Постоянные ссылки</a> и выберите любой вариант кроме "Обычные".</p>';
+                echo '</div>';
+            });
+        }
+        
+        // Проверяем, что WooCommerce REST API включен
+        if (!get_option('woocommerce_api_enabled')) {
+            update_option('woocommerce_api_enabled', 'yes');
+        }
+    }
+}
+
+// Подключаем файл диагностики WooCommerce
+if (file_exists(get_template_directory() . '/woocommerce-debug.php')) {
+    require_once get_template_directory() . '/woocommerce-debug.php';
+}
+
 
 
 
